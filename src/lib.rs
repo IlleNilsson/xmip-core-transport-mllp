@@ -20,6 +20,7 @@ use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use transport::error::{Result, classify, protocol_error};
+use transport::socket;
 use transport::{Arrived, Directions, Transport};
 
 /// Start of block.
@@ -59,12 +60,7 @@ impl MllpTransport {
     /// # Errors
     /// Where the address is taken, malformed, or not permitted.
     pub fn bind(&self) -> Result<(TcpListener, String)> {
-        let listener =
-            TcpListener::bind(&self.bind).map_err(|e| classify("binding the listener", &e))?;
-        let local = listener
-            .local_addr()
-            .map_err(|e| classify("reading the bound address", &e))?;
-        Ok((listener, local.to_string()))
+        socket::bind_tcp(&self.bind)
     }
 
     /// Take one framed message from an already-bound listener, and hand back
