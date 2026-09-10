@@ -86,7 +86,11 @@ impl MllpTransport {
     }
 }
 
-/// Read one MLLP frame: everything between `<VT>` and `<FS><CR>`.
+/// Read one MLLP frame: everything between `<VT>` and the `<FS><CR>` pair.
+/// The end of block is the pair: an `<FS>` followed by anything else is
+/// inside the message, as is a `<CR>` on its own — HL7 ends every segment
+/// with one. Until 2026-09-09 the first `<FS>` ended the block, and a
+/// message carrying one anywhere closed the connection.
 ///
 /// # Errors
 /// No start byte, a frame that ends without its end bytes, or one over
@@ -100,23 +104,21 @@ pub fn read_frame(reader: &mut impl BufRead) -> Result<Vec<u8>> {
         return Err(protocol_error("a message that does not start with <VT>"));
     }
     let mut message = Vec::new();
-    reader
-        .read_until(FS, &mut message)
-        .map_err(|e| classify("reading the message", &e))?;
-    if message.pop() != Some(FS) {
-        return Err(protocol_error("a connection that closed inside a message"));
+    loop {
+        let read = reader
+            .read_until(CR, &mut message)
+            .map_err(|e| classify("reading the message", &e))?;
+        if read == 0 || message.last() != Some(&CR) {
+            return Err(protocol_error("a connection that closed inside a message"));
+        }
+        if message.len() > MAX_MESSAGE + 2 {
+            return Err(protocol_error("a message over the size Xmip will read"));
+        }
+        if message.ends_with(&[FS, CR]) {
+            message.truncate(message.len() - 2);
+            return Ok(message);
+        }
     }
-    if message.len() > MAX_MESSAGE {
-        return Err(protocol_error("a message over the size Xmip will read"));
-    }
-    let mut cr = [0u8; 1];
-    reader
-        .read_exact(&mut cr)
-        .map_err(|e| classify("reading the end of block", &e))?;
-    if cr[0] != CR {
-        return Err(protocol_error("an end of block not followed by <CR>"));
-    }
-    Ok(message)
 }
 
 /// `message`, framed.
@@ -205,6 +207,23 @@ mod tests {
         assert!(read_frame(&mut BufReader::new(&b"MSH|no start"[..])).is_err());
         assert!(read_frame(&mut BufReader::new(&[VT, b'M', b'S', b'H'][..])).is_err());
         assert!(read_frame(&mut BufReader::new(&[VT, b'M', FS, b'x'][..])).is_err());
+    }
+
+    #[test]
+    fn a_message_carrying_the_block_bytes_apart_reads_whole() {
+        // Every byte value in order: an <FS> followed by 0x1d, a <CR> on its
+        // own, a NUL and a 0xff. Only the pair ends the block.
+        let every: Vec<u8> = (0..=255).collect();
+        let framed = frame(&every);
+        let mut reader = BufReader::new(framed.as_slice());
+        assert_eq!(read_frame(&mut reader).expect("frame"), every);
+        let segments = b"MSH|^~\\&|A|B\rPID|1\x1cx\r";
+        let framed = frame(segments);
+        let mut reader = BufReader::new(framed.as_slice());
+        assert_eq!(read_frame(&mut reader).expect("frame"), segments);
+        let framed = frame(b"");
+        let mut reader = BufReader::new(framed.as_slice());
+        assert!(read_frame(&mut reader).expect("empty").is_empty());
     }
 
     #[test]
