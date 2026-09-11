@@ -20,6 +20,7 @@ use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use transport::error::{Result, classify, protocol_error};
+use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
 
@@ -34,6 +35,7 @@ pub const CR: u8 = 0x0D;
 /// that never closes should not read the peer forever.
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
+#[derive(Clone)]
 pub struct MllpTransport {
     bind: String,
     read_timeout: Option<Duration>,
@@ -193,9 +195,102 @@ pub fn send_and_receive(target: &str, bytes: &[u8], timeout: Option<Duration>) -
     read_frame(&mut reader)
 }
 
+impl MllpTransport {
+    /// Both ends on this machine: an ephemeral local port, the loopback
+    /// timeout on both the accept and the wait for the acknowledgement.
+    #[must_use]
+    pub fn loopback() -> Self {
+        Self::new("127.0.0.1:0").timing_out_after(LOOPBACK_TIMEOUT)
+    }
+}
+
+/// A bound listener waiting for its one framed message, which it answers
+/// with the bytes it got: the acknowledgement is HL7's to compose, and the
+/// echo proves the reply channel and nothing more.
+struct Listening {
+    transport: MllpTransport,
+    listener: TcpListener,
+    address: String,
+}
+
+impl FarEnd for Listening {
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    fn take_one(self: Box<Self>) -> Result<Arrived> {
+        let (arrived, mut connection) = self.transport.accept_one(&self.listener)?;
+        acknowledge(&mut connection, &arrived.bytes)?;
+        Ok(arrived)
+    }
+}
+
+impl Loopback for MllpTransport {
+    /// A block cannot hold its own end: `<FS><CR>` inside the message ends
+    /// it there, and what follows is read as the next one.
+    fn refuses(&self, payload: &[u8]) -> Option<String> {
+        payload
+            .windows(2)
+            .any(|pair| pair == [FS, CR])
+            .then(|| "an MLLP block cannot hold its own end of block, <FS><CR>".to_string())
+    }
+
+    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
+        let (listener, address) = self.bind()?;
+        Ok(Box::new(Listening {
+            transport: self.clone(),
+            listener,
+            address,
+        }))
+    }
+
+    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
+        send_and_receive(address, payload, self.read_timeout).map(|_| ())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shapes a transport is most likely to change: nothing, one byte,
+    /// every byte value, a run of NULs, high bytes, and line endings alone.
+    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![0x2a]),
+            ("every byte", (0..=255).collect()),
+            ("nul run", vec![0; 512]),
+            ("high bytes", vec![0xff; 512]),
+            ("crlf storm", b"\r\n".repeat(400)),
+        ]
+    }
+
+    #[test]
+    fn the_loopback_round_trips_a_message_and_acknowledges_it() {
+        let arrived = MllpTransport::loopback()
+            .round(b"MSH|^~\\&|LAB|HOSP\rPID|1\r")
+            .expect("round");
+        assert_eq!(arrived.bytes, b"MSH|^~\\&|LAB|HOSP\rPID|1\r");
+        assert!(arrived.origin_uri.starts_with("mllp://127.0.0.1:"));
+    }
+
+    #[test]
+    fn the_loopback_returns_the_edge_payloads_whole_and_refuses_its_own_end() {
+        let mllp = MllpTransport::loopback();
+        assert!(mllp.ceiling().is_none());
+        for (name, bytes) in edge_payloads() {
+            assert!(mllp.refuses(&bytes).is_none(), "{name}");
+            assert_eq!(mllp.round(&bytes).expect(name).bytes, bytes, "{name}");
+        }
+        // A declared refusal is true: the bytes really do not come back whole.
+        let holds_its_end = [b'a', FS, CR, b'b'];
+        assert!(mllp.refuses(&holds_its_end).is_some());
+        assert_ne!(
+            mllp.round(&holds_its_end).expect("cut").bytes,
+            holds_its_end
+        );
+    }
 
     #[test]
     fn a_frame_round_trips_and_a_bad_one_is_refused() {
