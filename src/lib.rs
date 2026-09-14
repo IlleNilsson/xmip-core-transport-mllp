@@ -20,6 +20,7 @@ use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use transport::error::{Result, classify, protocol_error};
+use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
@@ -204,22 +205,9 @@ impl MllpTransport {
     }
 }
 
-/// A bound listener waiting for its one framed message, which it answers
-/// with the bytes it got: the acknowledgement is HL7's to compose, and the
-/// echo proves the reply channel and nothing more.
-struct Listening {
-    transport: MllpTransport,
-    listener: TcpListener,
-    address: String,
-}
-
-impl FarEnd for Listening {
-    fn address(&self) -> &str {
-        &self.address
-    }
-
-    fn take_one(self: Box<Self>) -> Result<Arrived> {
-        let (arrived, mut connection) = self.transport.accept_one(&self.listener)?;
+impl Accepting for MllpTransport {
+    fn take_one(&self, listener: &TcpListener) -> Result<Arrived> {
+        let (arrived, mut connection) = self.accept_one(listener)?;
         acknowledge(&mut connection, &arrived.bytes)?;
         Ok(arrived)
     }
@@ -237,11 +225,7 @@ impl Loopback for MllpTransport {
 
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         let (listener, address) = self.bind()?;
-        Ok(Box::new(Listening {
-            transport: self.clone(),
-            listener,
-            address,
-        }))
+        Ok(Box::new(Listening::new(self.clone(), listener, address)))
     }
 
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
@@ -252,19 +236,7 @@ impl Loopback for MllpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The shapes a transport is most likely to change: nothing, one byte,
-    /// every byte value, a run of NULs, high bytes, and line endings alone.
-    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
-        vec![
-            ("empty", Vec::new()),
-            ("one byte", vec![0x2a]),
-            ("every byte", (0..=255).collect()),
-            ("nul run", vec![0; 512]),
-            ("high bytes", vec![0xff; 512]),
-            ("crlf storm", b"\r\n".repeat(400)),
-        ]
-    }
+    use transport::payload::edge_payloads;
 
     #[test]
     fn the_loopback_round_trips_a_message_and_acknowledges_it() {
