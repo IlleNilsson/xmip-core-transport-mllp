@@ -73,14 +73,9 @@ impl MllpTransport {
     /// Where the connection could not be accepted, the frame is malformed, or
     /// the peer stopped mid-message.
     pub fn accept_one(&self, listener: &TcpListener) -> Result<(Arrived, TcpStream)> {
-        let (stream, peer) = listener
-            .accept()
-            .map_err(|e| classify("accepting a connection", &e))?;
-        if let Some(timeout) = self.read_timeout {
-            stream
-                .set_read_timeout(Some(timeout))
-                .map_err(|e| classify("setting the read timeout", &e))?;
-        }
+        // The wait for the connection is bounded as well as the reads. It was
+        // bare until 2026-09-21, and a far end nobody reached waited for good.
+        let (stream, peer) = socket::accept_tcp(listener, self.read_timeout)?;
         let reader = stream
             .try_clone()
             .map_err(|e| classify("cloning the connection", &e))?;
@@ -176,13 +171,9 @@ impl Transport for MllpTransport {
 /// # Errors
 /// Where the peer refused, could not be reached, or answered without a frame.
 pub fn send_and_receive(target: &str, bytes: &[u8], timeout: Option<Duration>) -> Result<Vec<u8>> {
-    let mut stream =
-        TcpStream::connect(target).map_err(|e| classify("connecting to the peer", &e))?;
-    if let Some(timeout) = timeout {
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|e| classify("setting the read timeout", &e))?;
-    }
+    // The connect is bounded as well as the reads. It was bare until
+    // 2026-09-21, and a machine out of ephemeral ports waited without end.
+    let mut stream = socket::connect_tcp(target, timeout)?;
     stream
         .write_all(&frame(bytes))
         .map_err(|e| classify("writing to the peer", &e))?;
