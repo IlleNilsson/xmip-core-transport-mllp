@@ -197,7 +197,7 @@ impl MllpTransport {
 }
 
 impl Accepting for MllpTransport {
-    fn take_one(&self, listener: &TcpListener) -> Result<Arrived> {
+    fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
         let (arrived, mut connection) = self.accept_one(listener)?;
         acknowledge(&mut connection, &arrived.bytes)?;
         Ok(arrived)
@@ -215,8 +215,7 @@ impl Loopback for MllpTransport {
     }
 
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let (listener, address) = self.bind()?;
-        Ok(Box::new(Listening::new(self.clone(), listener, address)))
+        Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
 
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
