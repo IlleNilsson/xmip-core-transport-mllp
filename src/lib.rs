@@ -15,7 +15,7 @@
 //! connection open waiting for the acknowledgement, so a Contract failure can
 //! be answered rather than only audited.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
@@ -33,10 +33,6 @@ pub const VT: u8 = 0x0B;
 pub const FS: u8 = 0x1C;
 /// Carriage return, closing the end of block.
 pub const CR: u8 = 0x0D;
-
-/// The most an MLLP message may be: HL7 messages are kilobytes, and a frame
-/// that never closes should not read the peer forever.
-pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct MllpTransport {
@@ -117,7 +113,7 @@ impl Configured for MllpTransport {
 ///
 /// # Errors
 /// No start byte, a frame that ends without its end bytes, or one over
-/// [`MAX_MESSAGE`].
+/// `net::MAX_BODY`: a frame that never closes does not read the peer forever.
 pub fn read_frame(reader: &mut impl BufRead) -> Result<Vec<u8>> {
     let mut first = [0u8; 1];
     reader
@@ -128,14 +124,9 @@ pub fn read_frame(reader: &mut impl BufRead) -> Result<Vec<u8>> {
     }
     let mut message = Vec::new();
     loop {
-        let read = reader
-            .read_until(CR, &mut message)
-            .map_err(|e| classify("reading the message", &e))?;
+        let read = net::read::until(reader, CR, net::MAX_BODY + 2, &mut message)?;
         if read == 0 || message.last() != Some(&CR) {
             return Err(protocol_error("a connection that closed inside a message"));
-        }
-        if message.len() > MAX_MESSAGE + 2 {
-            return Err(protocol_error("a message over the size Xmip will read"));
         }
         if message.ends_with(&[FS, CR]) {
             message.truncate(message.len() - 2);
@@ -208,7 +199,7 @@ pub fn send_and_receive(target: &str, bytes: &[u8], timeout: Option<Duration>) -
     let reader = stream
         .try_clone()
         .map_err(|e| classify("cloning the connection", &e))?;
-    let mut reader = BufReader::new(reader.take(MAX_MESSAGE as u64 + 3));
+    let mut reader = BufReader::new(reader);
     read_frame(&mut reader)
 }
 
