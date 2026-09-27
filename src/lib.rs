@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use transport::Configured;
 use transport::error::{Result, classify, protocol_error};
+use transport::kept::Kept;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
@@ -38,6 +39,8 @@ pub const CR: u8 = 0x0D;
 pub struct MllpTransport {
     bind: String,
     read_timeout: Option<Duration>,
+    /// The listener the first receive binds, and every receive takes from.
+    receiving: Kept<TcpListener>,
 }
 
 impl MllpTransport {
@@ -46,6 +49,7 @@ impl MllpTransport {
         Self {
             bind: bind.into(),
             read_timeout: None,
+            receiving: Kept::new(),
         }
     }
 
@@ -168,9 +172,11 @@ impl Transport for MllpTransport {
         Directions::BOTH
     }
 
+    /// One framed message, from the listener the first receive bound and
+    /// kept.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let (listener, _) = self.bind()?;
-        let (arrived, _connection) = self.accept_one(&listener)?;
+        let listener = self.receiving.bound(|| self.bind())?;
+        let (arrived, _connection) = self.accept_one(listener)?;
         Ok(vec![arrived])
     }
 
@@ -243,6 +249,25 @@ impl Loopback for MllpTransport {
 mod tests {
     use super::*;
     use transport::payload::edge_payloads;
+
+    #[test]
+    fn every_receive_takes_from_the_listener_the_first_bound() {
+        // Every frame lands before any receive: queued on the kept
+        // listener, not refused, and taken in order by receives that bind
+        // nothing.
+        let receiver = MllpTransport::loopback();
+        receiver.receiving.bound(|| receiver.bind()).expect("bound");
+        let address = receiver.receiving.address().expect("address");
+        for round in 0..5 {
+            let mut peer = socket::connect_tcp(address, Some(LOOPBACK_TIMEOUT)).expect("peer");
+            let message = format!("MSH|round {round}\r");
+            peer.write_all(&frame(message.as_bytes())).expect("framed");
+        }
+        for round in 0..5 {
+            let arrived = receiver.receive().expect("received");
+            assert_eq!(arrived[0].bytes, format!("MSH|round {round}\r").as_bytes());
+        }
+    }
 
     #[test]
     fn mllp_declares_its_settings_and_reads_through_them() {
