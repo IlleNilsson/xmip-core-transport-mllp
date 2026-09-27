@@ -19,11 +19,13 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
+use transport::Configured;
 use transport::error::{Result, classify, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
+use xcore::settings::{Applies, Kind, Presence, Setting, Settings};
 
 /// Start of block.
 pub const VT: u8 = 0x0B;
@@ -81,6 +83,29 @@ impl MllpTransport {
             .map_err(|e| classify("cloning the connection", &e))?;
         let message = read_frame(&mut BufReader::new(reader))?;
         Ok((Arrived::new(format!("mllp://{peer}"), message), stream))
+    }
+}
+
+impl Configured for MllpTransport {
+    /// The address is where a Receive Location listens and where a Send
+    /// Location connects; the one setting bounds the wait for either.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[Setting {
+            name: "timeout",
+            kind: Kind::Duration,
+            presence: Presence::Optional,
+            meaning: "How long a connection, a frame and its acknowledgement are waited on.",
+            applies: Applies::Both,
+        }],
+    };
+
+    fn configured(address: &str, settings: &xcore::settings::Read) -> Result<Self> {
+        let transport = Self::new(address);
+        Ok(match settings.optional_duration("timeout") {
+            Some(timeout) => transport.timing_out_after(timeout),
+            None => transport,
+        })
     }
 }
 
@@ -227,6 +252,21 @@ impl Loopback for MllpTransport {
 mod tests {
     use super::*;
     use transport::payload::edge_payloads;
+
+    #[test]
+    fn mllp_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert!(MllpTransport::SETTINGS.problems().is_empty());
+        let given = [("timeout".to_string(), Given::Text("30s".to_string()))];
+        let built = MllpTransport::open("0.0.0.0:2575", Applies::Receive, &given).expect("built");
+        assert_eq!(built.bind, "0.0.0.0:2575");
+        assert_eq!(built.read_timeout, Some(Duration::from_secs(30)));
+        let unknown = [("ack".to_string(), Given::Boolean(true))];
+        let Err(refused) = MllpTransport::open("0.0.0.0:2575", Applies::Send, &unknown) else {
+            panic!("mllp declares no ack");
+        };
+        assert!(refused.message.contains("\"ack\""), "{refused}");
+    }
 
     #[test]
     fn the_loopback_round_trips_a_message_and_acknowledges_it() {
