@@ -29,9 +29,9 @@ use transport::{Arrived, Directions, Transport};
 use xcore::settings::{Applies, Kind, Presence, Setting, Settings};
 
 /// Start of block.
-pub const VT: u8 = 0x0B;
+const VT: u8 = 0x0B;
 /// End of block.
-pub const FS: u8 = 0x1C;
+const FS: u8 = 0x1C;
 /// Carriage return, closing the end of block.
 pub const CR: u8 = 0x0D;
 
@@ -192,7 +192,7 @@ impl Transport for MllpTransport {
 ///
 /// # Errors
 /// Where the peer refused, could not be reached, or answered without a frame.
-pub fn send_and_receive(target: &str, bytes: &[u8], timeout: Option<Duration>) -> Result<Vec<u8>> {
+fn send_and_receive(target: &str, bytes: &[u8], timeout: Option<Duration>) -> Result<Vec<u8>> {
     // The connect is bounded as well as the reads. It was bare until
     // 2026-09-21, and a machine out of ephemeral ports waited without end.
     let mut stream = socket::connect_tcp(target, timeout)?;
