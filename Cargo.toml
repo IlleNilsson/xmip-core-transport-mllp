@@ -23,6 +23,9 @@ net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson
 # The settings this technology declares (xcore::settings), read through
 # transport::Configured (ADR-0064, amendment 2026-09-26).
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+# The HL7 acknowledgement a verdict writes back (`hl7_v2::acknowledge`), and
+# the MSA-1 a send reads off the answer: HL7's content, composed once there.
+hl7_v2 = { package = "xmip-core-contract-hl7-v2", git = "https://github.com/IlleNilsson/xmip-core-contract-hl7-v2", branch = "main" }
 
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test
