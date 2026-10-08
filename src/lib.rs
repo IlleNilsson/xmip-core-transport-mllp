@@ -29,6 +29,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 use hl7_v2::Acknowledgement as Hl7Answer;
+use transport::ArrivalIdentity;
 use transport::Configured;
 use transport::answer::Answer;
 use transport::error::TransportError;
@@ -108,11 +109,7 @@ impl MllpTransport {
                 hl7_v2::acknowledge(&original, code, text).as_bytes(),
             ))
         });
-        Ok(Arrived::whole(
-            format!("mllp://{peer}"),
-            message,
-            acknowledgement,
-        ))
+        Ok(Arrived::whole(format!("mllp://{peer}"), message, acknowledgement).from_peer(peer))
     }
 }
 
@@ -267,6 +264,10 @@ impl Accepting for MllpTransport {
 }
 
 impl Loopback for MllpTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::PEER
+    }
+
     /// A block cannot hold its own end: `<FS><CR>` inside the message ends
     /// it there, and what follows is read as the next one.
     fn refuses(&self, payload: &[u8]) -> Option<String> {
