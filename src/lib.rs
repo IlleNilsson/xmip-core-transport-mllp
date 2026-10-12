@@ -192,6 +192,10 @@ impl Transport for MllpTransport {
         )
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Waits("the accept waits for a connection")
+    }
+
     /// One framed message, from the listener the first receive bound and
     /// kept. Its caller waits for the acknowledgement until the receive
     /// cycle has ended: `AA` on accepted, `AR` on refused.
