@@ -326,7 +326,7 @@ mod tests {
     #[test]
     fn mllp_declares_its_settings_and_reads_through_them() {
         use xcore::settings::Given;
-        assert!(MllpTransport::SETTINGS.problems().is_empty());
+        assert_eq!(MllpTransport::SETTINGS.problems(), [] as [String; 0]);
         let given = [("timeout".to_string(), Given::Text("30s".to_string()))];
         let built = MllpTransport::open("0.0.0.0:2575", Applies::Receive, &given).expect("built");
         assert_eq!(built.bind, "0.0.0.0:2575");
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(read_frame(&mut reader).expect("frame"), segments);
         let framed = frame(b"");
         let mut reader = BufReader::new(framed.as_slice());
-        assert!(read_frame(&mut reader).expect("empty").is_empty());
+        assert_eq!(read_frame(&mut reader).expect("empty"), [] as [u8; 0]);
     }
 
     const ADT: &[u8] = b"MSH|^~\\&|LAB|HOSP|XMIP|HUB|20261002||ADT^A01|C1|P|2.5\rPID|1\r";
