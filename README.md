@@ -16,8 +16,10 @@ sender to send it again. The codes are HL7 v2 Table 0008 (MSA-1), under the
 original acknowledgment rules of chapter 2, section 2.9.2. All three are
 composed by `hl7_v2::acknowledge`, from the message they answer. A connection
 dropped without a verdict is closed unanswered, and the sender sends again.
-A send reads the answer's MSA-1: `AR` or `CR` fails it as retryable, `AE` or
-`CE` as permanent.
+A send writes the block's start byte, then the Message as it is read from the
+Ledger, a piece at a time, never whole in memory, then the block's end
+(`Sending::Streamed`, 2026-10-19). It reads the answer's MSA-1: `AR` or `CR`
+fails it as retryable, `AE` or `CE` as permanent.
 
 ## Toolchain
 
