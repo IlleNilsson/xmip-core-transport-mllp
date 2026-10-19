@@ -199,17 +199,23 @@ impl Transport for MllpTransport {
     /// One framed message, from the listener the first receive bound and
     /// kept. Its caller waits for the acknowledgement until the receive
     /// cycle has ended: `AA` on accepted, `AR` on refused.
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
         let listener = self.receiving.bound(|| self.bind())?;
         Ok(vec![self.accept_one(listener)?])
+    }
+
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Streamed(
+            "the frame carries the body between its start and end bytes as it is read",
+        )
     }
 
     /// Send one framed message and read the framed acknowledgement. An `AR`
     /// or `CR` (rejected, send again) fails the send as retryable; an `AE`
     /// or `CE` (the content was refused) as permanent. An answer that is not
     /// HL7 is delivery, as it always was.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        let answer = send_and_receive(target, bytes, self.read_timeout)?;
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        let answer = send_and_receive(target, &outgoing, self.read_timeout)?;
         refusal(&answer).map_or(Ok(()), Err)
     }
 }
@@ -235,16 +241,27 @@ fn refusal(answer: &[u8]) -> Option<TransportError> {
 ///
 /// # Errors
 /// Where the peer refused, could not be reached, or answered without a frame.
-fn send_and_receive(target: &str, bytes: &[u8], timeout: Option<Duration>) -> Result<Vec<u8>> {
+fn send_and_receive(
+    target: &str,
+    outgoing: &transport::Outgoing<'_>,
+    timeout: Option<Duration>,
+) -> Result<Vec<u8>> {
     // The connect is bounded as well as the reads. It was bare until
     // 2026-09-21, and a machine out of ephemeral ports waited without end.
     let mut stream = socket::connect_tcp(target, timeout)?;
-    stream
-        .write_all(&frame(bytes))
+    // The block's start, the body as it is read from the Ledger — never
+    // whole here — and its end, through one buffer so a small Message is
+    // still one write.
+    let mut framed = std::io::BufWriter::new(&mut stream);
+    framed
+        .write_all(&[VT])
         .map_err(|e| classify("writing to the peer", &e))?;
-    stream
-        .flush()
-        .map_err(|e| classify("flushing to the peer", &e))?;
+    outgoing.write_to(&mut framed)?;
+    framed
+        .write_all(&[FS, CR])
+        .and_then(|()| framed.flush())
+        .map_err(|e| classify("writing to the peer", &e))?;
+    drop(framed);
     let reader = stream
         .try_clone()
         .map_err(|e| classify("cloning the connection", &e))?;
@@ -401,7 +418,11 @@ mod tests {
         let receiver = MllpTransport::new("127.0.0.1:0").timing_out_after(Duration::from_secs(2));
         let (listener, address) = receiver.bind().expect("binding");
         let sender = std::thread::spawn(move || {
-            send_and_receive(&address, ADT, Some(Duration::from_secs(2)))
+            send_and_receive(
+                &address,
+                &transport::Outgoing::held(ADT),
+                Some(Duration::from_secs(2)),
+            )
         });
         let arrived = receiver.accept_one(&listener).expect("accepting");
         (sender, arrived)
