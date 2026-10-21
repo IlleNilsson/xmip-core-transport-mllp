@@ -23,24 +23,39 @@
 //! so the sender sends it again) on [`Verdict::Failed`]. A connection
 //! dropped without a verdict is closed unanswered, and the sender sends
 //! again.
+//!
+//! **Both ends keep the connection.** A Send Location keeps one per target
+//! in the capability's pool (`transport::Pool`), frame after frame, each
+//! acknowledgement read before the next frame goes; a Receive Location
+//! keeps its senders' connections beside its listener
+//! (`transport::serving::Serving`), each frame one turn ([`peer`]). Until
+//! 2026-10-21 every send opened a connection of its own, and every receive
+//! accepted one.
+//!
+//! ```text
+//! peer.rs   a sender's connection kept at a Receive Location
+//! ```
+
+pub mod peer;
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
-use hl7_v2::Acknowledgement as Hl7Answer;
 use transport::ArrivalIdentity;
 use transport::Configured;
-use transport::answer::Answer;
 use transport::error::TransportError;
 use transport::error::{Result, classify, protocol_error};
-use transport::kept::Kept;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
+use transport::pool::quiet;
+use transport::serving::{Serving, Turn};
 use transport::socket;
-use transport::{Acknowledgement, Taken, Verdict};
 use transport::{Arrived, Directions, Transport};
+use transport::{Pool, Pooled, Taken};
 use xcore::settings::{Applies, Kind, Presence, Setting, Settings};
+
+pub use peer::Peer;
 
 /// Start of block.
 const VT: u8 = 0x0B;
@@ -53,8 +68,11 @@ pub const CR: u8 = 0x0D;
 pub struct MllpTransport {
     bind: String,
     read_timeout: Option<Duration>,
-    /// The listener the first receive binds, and every receive takes from.
-    receiving: Kept<TcpListener>,
+    /// The connection kept to each target, shared by every clone.
+    sending: Pool<Line>,
+    /// The listener the first receive binds, and the senders' connections
+    /// kept open on it between their frames.
+    receiving: Serving<Peer>,
 }
 
 impl MllpTransport {
@@ -63,7 +81,8 @@ impl MllpTransport {
         Self {
             bind: bind.into(),
             read_timeout: None,
-            receiving: Kept::new(),
+            sending: Pool::new(),
+            receiving: Serving::new(),
         }
     }
 
@@ -94,22 +113,12 @@ impl MllpTransport {
         // The wait for the connection is bounded as well as the reads. It was
         // bare until 2026-09-21, and a far end nobody reached waited for good.
         let (stream, peer) = socket::accept_tcp(listener, self.read_timeout)?;
-        let answer = Answer::held(&stream)?;
-        let message = read_frame(&mut BufReader::new(stream))?;
-        let original = String::from_utf8_lossy(&message).into_owned();
-        // Let go without a verdict, the connection is shut: the sender
-        // sends the message again.
-        let acknowledgement = Acknowledgement::deferred(move |verdict| {
-            let (code, text) = match verdict {
-                Verdict::Accepted => (Hl7Answer::Accept, ""),
-                Verdict::Refused(_) => (Hl7Answer::Error, "refused; do not send it again"),
-                Verdict::Failed => (Hl7Answer::Reject, "not processed; send it again"),
-            };
-            answer.write(&frame(
-                hl7_v2::acknowledge(&original, code, text).as_bytes(),
-            ))
-        });
-        Ok(Arrived::whole(format!("mllp://{peer}"), message, acknowledgement).from_peer(peer))
+        match Peer::new(stream, peer)?.turn()? {
+            Turn::Taken(arrived) | Turn::Last(arrived) => Ok(arrived),
+            Turn::Nothing | Turn::Closed => Err(protocol_error(
+                "a connection that closed before its first message",
+            )),
+        }
     }
 }
 
@@ -193,15 +202,19 @@ impl Transport for MllpTransport {
     }
 
     fn waiting(&self) -> transport::Waiting {
-        transport::Waiting::Waits("the accept waits for a connection")
+        transport::Waiting::Waits("the listener and the kept connections wait for a frame")
     }
 
-    /// One framed message, from the listener the first receive bound and
-    /// kept. Its caller waits for the acknowledgement until the receive
-    /// cycle has ended: `AA` on accepted, `AR` on refused.
+    /// One framed message, from whichever sender sends first: one new on
+    /// the listener the first receive bound and kept, or one whose
+    /// connection is kept. Its caller waits for the acknowledgement until
+    /// the receive cycle has ended: `AA` on accepted, `AE` on refused, `AR`
+    /// on failed.
     fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
-        let listener = self.receiving.bound(|| self.bind())?;
-        Ok(vec![self.accept_one(listener)?])
+        let arrived =
+            self.receiving
+                .next(|| self.bind(), self.read_timeout, Peer::new, Peer::turn)?;
+        Ok(vec![arrived])
     }
 
     fn sending(&self) -> transport::Sending {
@@ -210,12 +223,17 @@ impl Transport for MllpTransport {
         )
     }
 
-    /// Send one framed message and read the framed acknowledgement. An `AR`
-    /// or `CR` (rejected, send again) fails the send as retryable; an `AE`
-    /// or `CE` (the content was refused) as permanent. An answer that is not
-    /// HL7 is delivery, as it always was.
+    /// Send one framed message on the connection kept to `target`, or a new
+    /// one, and read the framed acknowledgement. An `AR` or `CR` (rejected,
+    /// send again) fails the send as retryable; an `AE` or `CE` (the content
+    /// was refused) as permanent. An answer that is not HL7 is delivery, as
+    /// it always was. Either way the connection is kept for the next.
     fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
-        let answer = send_and_receive(target, &outgoing, self.read_timeout)?;
+        let answer = self.sending.exchange(
+            target,
+            || Line::open(target, self.read_timeout),
+            |line| line.exchange(&outgoing),
+        )?;
         refusal(&answer).map_or(Ok(()), Err)
     }
 }
@@ -237,36 +255,53 @@ fn refusal(answer: &[u8]) -> Option<TransportError> {
     }
 }
 
-/// Send one framed message to `target` and return the framed acknowledgement.
-///
-/// # Errors
-/// Where the peer refused, could not be reached, or answered without a frame.
-fn send_and_receive(
-    target: &str,
-    outgoing: &transport::Outgoing<'_>,
-    timeout: Option<Duration>,
-) -> Result<Vec<u8>> {
-    // The connect is bounded as well as the reads. It was bare until
-    // 2026-09-21, and a machine out of ephemeral ports waited without end.
-    let mut stream = socket::connect_tcp(target, timeout)?;
-    // The block's start, the body as it is read from the Ledger — never
-    // whole here — and its end, through one buffer so a small Message is
-    // still one write.
-    let mut framed = std::io::BufWriter::new(&mut stream);
-    framed
-        .write_all(&[VT])
-        .map_err(|e| classify("writing to the peer", &e))?;
-    outgoing.write_to(&mut framed)?;
-    framed
-        .write_all(&[FS, CR])
-        .and_then(|()| framed.flush())
-        .map_err(|e| classify("writing to the peer", &e))?;
-    drop(framed);
-    let reader = stream
-        .try_clone()
-        .map_err(|e| classify("cloning the connection", &e))?;
-    let mut reader = BufReader::new(reader);
-    read_frame(&mut reader)
+/// A Send Location's connection to one target, kept between its frames.
+struct Line {
+    reader: BufReader<TcpStream>,
+    writer: TcpStream,
+}
+
+impl Pooled for Line {
+    /// A receiver speaks only to acknowledge, so anything it sent to an
+    /// idle connection, or its close, lets the connection go.
+    fn usable(&mut self) -> bool {
+        self.reader.buffer().is_empty() && quiet(&self.writer)
+    }
+}
+
+impl Line {
+    /// A new connection to `target`.
+    ///
+    /// # Errors
+    /// Where the peer refused or could not be reached.
+    fn open(target: &str, timeout: Option<Duration>) -> Result<Self> {
+        // The connect is bounded as well as the reads. It was bare until
+        // 2026-09-21, and a machine out of ephemeral ports waited without
+        // end.
+        let (reader, writer) = socket::split(socket::connect_tcp(target, timeout)?)?;
+        Ok(Self { reader, writer })
+    }
+
+    /// One framed message, and the framed acknowledgement it was answered.
+    ///
+    /// # Errors
+    /// Where the peer went away, or answered without a frame.
+    fn exchange(&mut self, outgoing: &transport::Outgoing<'_>) -> Result<Vec<u8>> {
+        // The block's start, the body as it is read from the Ledger — never
+        // whole here — and its end, through one buffer so a small Message
+        // is still one write.
+        let mut framed = std::io::BufWriter::new(&mut self.writer);
+        framed
+            .write_all(&[VT])
+            .map_err(|e| classify("writing to the peer", &e))?;
+        outgoing.write_to(&mut framed)?;
+        framed
+            .write_all(&[FS, CR])
+            .and_then(|()| framed.flush())
+            .map_err(|e| classify("writing to the peer", &e))?;
+        drop(framed);
+        read_frame(&mut self.reader)
+    }
 }
 
 impl MllpTransport {
@@ -418,11 +453,8 @@ mod tests {
         let receiver = MllpTransport::new("127.0.0.1:0").timing_out_after(Duration::from_secs(2));
         let (listener, address) = receiver.bind().expect("binding");
         let sender = std::thread::spawn(move || {
-            send_and_receive(
-                &address,
-                &transport::Outgoing::held(ADT),
-                Some(Duration::from_secs(2)),
-            )
+            Line::open(&address, Some(Duration::from_secs(2)))?
+                .exchange(&transport::Outgoing::held(ADT))
         });
         let arrived = receiver.accept_one(&listener).expect("accepting");
         (sender, arrived)
@@ -474,6 +506,64 @@ mod tests {
         refusing.join().expect("thread").expect("answered");
         assert!(error.retryable, "{error}");
         assert!(error.message.contains("AR"), "{error}");
+    }
+
+    #[test]
+    fn a_hundred_sends_to_one_receiver_open_one_connection_and_every_receive_takes_from_it() {
+        // Until 2026-10-21 every send opened a connection of its own, and
+        // the sender's side of each waited out TIME_WAIT once it closed.
+        const ROUNDS: usize = 100;
+        let receiver = MllpTransport::loopback();
+        let address = receiver
+            .receiving
+            .bound(|| receiver.bind())
+            .expect("bound")
+            .to_string();
+        let sender = std::thread::spawn(move || {
+            let sender = MllpTransport::loopback();
+            let shared = sender.clone();
+            for round in 0..ROUNDS {
+                let by = if round % 2 == 0 { &sender } else { &shared };
+                by.send(&address, format!("MSH|round {round}\r").as_bytes())
+                    .expect("acknowledged");
+            }
+            sender.sending.opened()
+        });
+        let mut origins = std::collections::BTreeSet::new();
+        for round in 0..ROUNDS {
+            let taken = receiver.receive().expect("received").remove(0);
+            let taken = taken.taken().expect("accepted");
+            assert_eq!(taken.bytes, format!("MSH|round {round}\r").as_bytes());
+            origins.insert(taken.origin_uri);
+        }
+        assert_eq!(sender.join().expect("sender"), 1, "one connection");
+        assert_eq!(origins.len(), 1, "every frame on the kept connection");
+        assert_eq!(receiver.receiving.open(), 1);
+    }
+
+    #[test]
+    fn a_frame_sent_while_the_last_waits_for_its_verdict_is_taken_after_it() {
+        // MLLP answers one frame at a time: the second waits in the socket
+        // while the first's acknowledgement is owed, then is taken.
+        let receiver = MllpTransport::loopback();
+        let address = receiver
+            .receiving
+            .bound(|| receiver.bind())
+            .expect("bound")
+            .to_string();
+        let mut peer = socket::connect_tcp(&address, Some(LOOPBACK_TIMEOUT)).expect("peer");
+        peer.write_all(&frame(b"MSH|first\r")).expect("first");
+        peer.write_all(&frame(b"MSH|second\r")).expect("second");
+        let first = receiver.receive().expect("first").remove(0);
+        let mut reader = BufReader::new(peer.try_clone().expect("clone"));
+        first.taken().expect("accepted");
+        let second = receiver.receive().expect("second").remove(0);
+        assert_eq!(second.taken().expect("accepted").bytes, b"MSH|second\r");
+        for _ in 0..2 {
+            let answer = read_frame(&mut reader).expect("acknowledged");
+            assert!(answer.windows(7).any(|w| w == b"\rMSA|AA"), "{answer:?}");
+        }
+        assert_eq!(receiver.receiving.open(), 1);
     }
 
     #[test]

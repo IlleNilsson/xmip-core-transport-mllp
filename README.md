@@ -2,7 +2,7 @@
 
 HL7 Minimal Lower Layer Protocol over TCP: a framed message is one Stream, and the acknowledgment travels back on the same connection. A technology of [xmip-core-transport](https://github.com/IlleNilsson/xmip-core-transport).
 
-A Receive Location keeps its listener, bound on the first receive (`transport::kept::Kept`): a peer that connects between two receives is queued and taken by the next, where until 2026-09-27 each receive bound a listener of its own and a peer between receives was refused.
+A Receive Location keeps its listener, bound on the first receive: a peer that connects between two receives is queued and taken by the next, where until 2026-09-27 each receive bound a listener of its own and a peer between receives was refused. Since 2026-10-21 it keeps its senders' connections too (`transport::serving::Serving`), each frame one receive's turn from whichever sender sends first, and a Send Location keeps one connection per target (`transport::Pool`), frame after frame, each acknowledgement read before the next frame goes; until then every send opened a connection of its own, and every receive accepted one. A connection waiting for its acknowledgement takes no next frame (`src/peer.rs`): what its sender says meanwhile waits in the socket.
 
 ## Acknowledgement
 
