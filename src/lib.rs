@@ -136,6 +136,9 @@ impl Configured for MllpTransport {
         }],
     };
 
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = &["mllp"];
+
     fn configured(address: &str, settings: &xcore::settings::Read) -> Result<Self> {
         let transport = Self::new(address);
         Ok(match settings.optional_duration("timeout") {
