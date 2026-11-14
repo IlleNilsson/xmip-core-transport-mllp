@@ -44,6 +44,7 @@ use std::time::Duration;
 
 use transport::ArrivalIdentity;
 use transport::Configured;
+use transport::deadline::Within;
 use transport::error::TransportError;
 use transport::error::{Result, classify, protocol_error};
 use transport::listening::{Accepting, Listening};
@@ -113,7 +114,7 @@ impl MllpTransport {
         // The wait for the connection is bounded as well as the reads. It was
         // bare until 2026-09-21, and a far end nobody reached waited for good.
         let (stream, peer) = socket::accept_tcp(listener, self.read_timeout)?;
-        match Peer::new(stream, peer)?.turn()? {
+        match Peer::new(Within::new(stream), peer)?.turn()? {
             Turn::Taken(arrived) | Turn::Last(arrived) => Ok(arrived),
             Turn::Nothing | Turn::Closed => Err(protocol_error(
                 "a connection that closed before its first message",
@@ -145,6 +146,12 @@ impl Configured for MllpTransport {
             Some(timeout) => transport.timing_out_after(timeout),
             None => transport,
         })
+    }
+
+    /// Each sender's turn on a Receive Location taking at most `turn`.
+    fn turning_within(mut self, turn: Duration) -> Self {
+        self.receiving = self.receiving.turning_within(turn);
+        self
     }
 }
 

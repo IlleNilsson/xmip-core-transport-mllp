@@ -14,15 +14,17 @@ use std::net::{SocketAddr, TcpStream};
 
 use hl7_v2::Acknowledgement as Hl7Answer;
 use transport::answer::{Answer, Busy};
+use transport::deadline::Within;
 use transport::error::{Result, classify};
 use transport::serving::{Open, Turn};
 use transport::{Acknowledgement, Arrived, Verdict};
 
 use crate::{frame, read_frame};
 
-/// One sender's connection, kept between its frames.
+/// One sender's connection, kept between its frames, each read within its
+/// turn.
 pub struct Peer {
-    reader: BufReader<TcpStream>,
+    reader: BufReader<Within>,
     writer: TcpStream,
     from: SocketAddr,
     /// A frame taken and its acknowledgement not yet written.
@@ -34,8 +36,8 @@ impl Peer {
     ///
     /// # Errors
     /// Where the connection could not be cloned for its reads.
-    pub fn new(stream: TcpStream, peer: SocketAddr) -> Result<Self> {
-        let (reader, writer) = transport::socket::split(stream)?;
+    pub fn new(stream: Within, peer: SocketAddr) -> Result<Self> {
+        let (reader, writer) = stream.split()?;
         Ok(Self {
             reader,
             writer,
