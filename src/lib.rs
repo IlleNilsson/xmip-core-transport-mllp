@@ -198,6 +198,11 @@ impl Transport for MllpTransport {
         Directions::BOTH
     }
 
+    /// The callers turned away at their own connection (`transport::serving`).
+    fn turned_away(&self) -> transport::Turned {
+        self.receiving.turned_away()
+    }
+
     fn arrivals(&self) -> transport::Arrivals {
         transport::Arrivals::Unordered(
             "each caller's connection is its own, and a caller waits for its own answer",
