@@ -54,7 +54,7 @@ use transport::serving::{Serving, Turn};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
 use transport::{Pool, Pooled, Taken};
-use xcore::settings::{Applies, Kind, Presence, Setting, Settings};
+use xcore::settings::{Applies, Settings};
 
 pub use peer::Peer;
 
@@ -85,13 +85,6 @@ impl MllpTransport {
             sending: Pool::new(),
             receiving: Serving::new(),
         }
-    }
-
-    /// Give up on a peer that stops sending mid-frame.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.read_timeout = Some(timeout);
-        self
     }
 
     /// Bind and report the address actually assigned.
@@ -128,24 +121,22 @@ impl Configured for MllpTransport {
     /// Location connects; the one setting bounds the wait for either.
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
-        settings: &[Setting {
-            name: "timeout",
-            kind: Kind::Duration,
-            presence: Presence::Optional,
-            meaning: "How long a connection, a frame and its acknowledgement are waited on.",
-            applies: Applies::Both,
-        }],
+        settings: &[transport::configured::timeout(
+            Applies::Both,
+            None,
+            "How long a connection, a frame and its acknowledgement are waited on.",
+        )],
     };
 
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = &["mllp"];
 
-    fn configured(address: &str, settings: &xcore::settings::Read) -> Result<Self> {
-        let transport = Self::new(address);
-        Ok(match settings.optional_duration("timeout") {
-            Some(timeout) => transport.timing_out_after(timeout),
-            None => transport,
-        })
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.read_timeout)
+    }
+
+    fn configured(address: &str, _settings: &xcore::settings::Read) -> Result<Self> {
+        Ok(Self::new(address))
     }
 
     /// Each sender's turn on a Receive Location taking at most `turn`.
