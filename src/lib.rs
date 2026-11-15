@@ -257,7 +257,7 @@ impl Transport for MllpTransport {
 /// `CR` retryable, `AE` or `CE` permanent.
 fn refusal(answer: &[u8]) -> Option<TransportError> {
     let text = String::from_utf8_lossy(answer);
-    let message = hl7_v2::Message::parse(&text).ok()?;
+    let message = hl7_v2::er7::Message::parse(&text).ok()?;
     let said = format!(
         "the receiver answered {}: {}",
         message.field("MSA", 1),
