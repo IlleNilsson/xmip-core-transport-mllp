@@ -71,7 +71,7 @@ pub struct MllpTransport {
     read_timeout: Option<Duration>,
     /// The connection kept to each target, shared by every clone.
     sending: Pool<Line>,
-    /// The listener the first receive binds, and the senders' connections
+    /// The listener its open binds, and the senders' connections
     /// kept open on it between their frames.
     receiving: Serving<Peer>,
 }
@@ -150,6 +150,12 @@ impl Configured for MllpTransport {
         self.receiving = self.receiving.timed_by(clock);
         self
     }
+
+    /// The listener every receive takes from, bound where a Receive
+    /// Location listens.
+    fn listening(&self) -> Result<Option<&str>> {
+        self.receiving.bound(|| self.bind()).map(Some)
+    }
 }
 
 /// Read one MLLP frame: everything between `<VT>` and the `<FS><CR>` pair.
@@ -218,14 +224,14 @@ impl Transport for MllpTransport {
     }
 
     /// One framed message, from whichever sender sends first: one new on
-    /// the listener the first receive bound and kept, or one whose
+    /// the listener its open bound and kept, or one whose
     /// connection is kept. Its caller waits for the acknowledgement until
     /// the receive cycle has ended: `AA` on accepted, `AE` on refused, `AR`
     /// on failed.
     fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
-        let arrived =
-            self.receiving
-                .next(|| self.bind(), self.read_timeout, Peer::new, Peer::turn)?;
+        let arrived = self
+            .receiving
+            .next(self.read_timeout, Peer::new, Peer::turn)?;
         Ok(vec![arrived])
     }
 
