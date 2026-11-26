@@ -35,36 +35,55 @@
 //! ```text
 //! peer.rs   a sender's connection kept at a Receive Location
 //! ```
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature, HL7's
+//! acknowledgement included: what the surfaces' library carries (ADR-0064,
+//! amendment 2026-11-26).
 
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod peer;
 
+#[cfg(feature = "default")]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(feature = "default")]
 use std::net::{TcpListener, TcpStream};
+#[cfg(feature = "default")]
 use std::time::Duration;
 
-use transport::ArrivalIdentity;
-use transport::Configured;
-use transport::deadline::Within;
-use transport::error::TransportError;
-use transport::error::{Result, classify, protocol_error};
+#[cfg(feature = "default")]
+use transport::error::{Result, TransportError, classify, protocol_error};
+#[cfg(feature = "default")]
 use transport::listening::{Accepting, Listening};
+#[cfg(feature = "default")]
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
-use transport::pool::quiet;
+#[cfg(feature = "default")]
 use transport::serving::{Serving, Turn};
-use transport::socket;
-use transport::{Arrived, Directions, Transport};
-use transport::{Pool, Pooled, Taken};
-use xcore::settings::{Applies, Settings};
+#[cfg(feature = "default")]
+use transport::{
+    ArrivalIdentity, Arrived, Configured, Directions, Pool, Pooled, Taken, Transport,
+    deadline::Within, pool::quiet, socket,
+};
+#[cfg(feature = "default")]
+use xcore::settings::Settings;
 
+#[cfg(feature = "default")]
 pub use peer::Peer;
 
 /// Start of block.
+#[cfg(feature = "default")]
 const VT: u8 = 0x0B;
 /// End of block.
+#[cfg(feature = "default")]
 const FS: u8 = 0x1C;
 /// Carriage return, closing the end of block.
+#[cfg(feature = "default")]
 pub const CR: u8 = 0x0D;
 
+#[cfg(feature = "default")]
 #[derive(Clone)]
 pub struct MllpTransport {
     bind: String,
@@ -76,6 +95,7 @@ pub struct MllpTransport {
     receiving: Serving<Peer>,
 }
 
+#[cfg(feature = "default")]
 impl MllpTransport {
     #[must_use]
     pub fn new(bind: impl Into<String>) -> Self {
@@ -116,20 +136,10 @@ impl MllpTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for MllpTransport {
-    /// The address is where a Receive Location listens and where a Send
-    /// Location connects; the one setting bounds the wait for either.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[transport::configured::timeout(
-            Applies::Both,
-            None,
-            "How long a connection, a frame and its acknowledgement are waited on.",
-        )],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["mllp"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
         Some(&mut self.read_timeout)
@@ -167,6 +177,7 @@ impl Configured for MllpTransport {
 /// # Errors
 /// No start byte, a frame that ends without its end bytes, or one over
 /// `net::MAX_BODY`: a frame that never closes does not read the peer forever.
+#[cfg(feature = "default")]
 pub fn read_frame(reader: &mut impl BufRead) -> Result<Vec<u8>> {
     let mut first = [0u8; 1];
     reader
@@ -189,6 +200,7 @@ pub fn read_frame(reader: &mut impl BufRead) -> Result<Vec<u8>> {
 }
 
 /// `message`, framed.
+#[cfg(feature = "default")]
 #[must_use]
 pub fn frame(message: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(message.len() + 3);
@@ -199,6 +211,7 @@ pub fn frame(message: &[u8]) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "default")]
 impl Transport for MllpTransport {
     fn name(&self) -> &'static str {
         "mllp"
@@ -258,6 +271,7 @@ impl Transport for MllpTransport {
 
 /// The failure an acknowledgement says, where it says one: MSA-1 `AR` or
 /// `CR` retryable, `AE` or `CE` permanent.
+#[cfg(feature = "default")]
 fn refusal(answer: &[u8]) -> Option<TransportError> {
     let text = String::from_utf8_lossy(answer);
     let message = hl7_v2::er7::Message::parse(&text).ok()?;
@@ -274,11 +288,13 @@ fn refusal(answer: &[u8]) -> Option<TransportError> {
 }
 
 /// A Send Location's connection to one target, kept between its frames.
+#[cfg(feature = "default")]
 struct Line {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
 }
 
+#[cfg(feature = "default")]
 impl Pooled for Line {
     /// A receiver speaks only to acknowledge, so anything it sent to an
     /// idle connection, or its close, lets the connection go.
@@ -287,6 +303,7 @@ impl Pooled for Line {
     }
 }
 
+#[cfg(feature = "default")]
 impl Line {
     /// A new connection to `target`.
     ///
@@ -322,6 +339,7 @@ impl Line {
     }
 }
 
+#[cfg(feature = "default")]
 impl MllpTransport {
     /// Both ends on this machine: an ephemeral local port, the loopback
     /// timeout on both the accept and the wait for the acknowledgement.
@@ -331,12 +349,14 @@ impl MllpTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Accepting for MllpTransport {
     fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         self.accept_one(listener)?.taken()
     }
 }
 
+#[cfg(feature = "default")]
 impl Loopback for MllpTransport {
     fn arrival_identity(&self) -> ArrivalIdentity {
         ArrivalIdentity::PEER
@@ -395,7 +415,7 @@ mod tests {
 
     #[test]
     fn mllp_declares_its_settings_and_reads_through_them() {
-        use xcore::settings::Given;
+        use xcore::settings::{Applies, Given};
         assert_eq!(MllpTransport::SETTINGS.problems(), [] as [String; 0]);
         let given = [("timeout".to_string(), Given::Text("30s".to_string()))];
         let built = MllpTransport::open("0.0.0.0:2575", Applies::Receive, &given).expect("built");
