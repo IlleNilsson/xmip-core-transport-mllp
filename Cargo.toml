@@ -16,17 +16,17 @@ path = "src/lib.rs"
 # over TCP through the capability's sockets, so the tcp technology is not a
 # carrier here. Its declaration takes the capability's `timeout`
 # (`transport::configured::timeout`).
-transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+transport = { workspace = true }
 # A frame read to its end bytes under the ceiling (`net::read`,
 # `net::MAX_BODY`).
-net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", optional = true }
+net = { workspace = true, optional = true }
 # The settings this technology declares (xcore::settings), read through
 # transport::Configured (ADR-0064, amendment 2026-09-26).
-xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+xcore = { workspace = true }
 # The HL7 acknowledgement a verdict writes back (`hl7_v2::acknowledge`), and
 # the MSA-1 a send reads off the answer: HL7's content, composed once there,
 # and only the code's.
-hl7_v2 = { package = "xmip-core-contract-hl7-v2", git = "https://github.com/IlleNilsson/xmip-core-contract-hl7-v2", branch = "main", optional = true }
+hl7_v2 = { workspace = true, optional = true }
 
 [features]
 # The code and its declaration: the transport guide's "The declaration",
@@ -38,7 +38,7 @@ declaration = []
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test
 # support and never a production build (ADR-0044).
-transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
+transport = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
